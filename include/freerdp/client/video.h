@@ -34,7 +34,8 @@ extern "C"
 	/** @brief an implementation of surface used by the video channel */
 	typedef struct
 	{
-		UINT32 x, y, w, h;
+		INT32 x, y;
+		UINT32 w, h;
 		UINT32 alignedWidth, alignedHeight;
 		BYTE* data;
 		DWORD format;

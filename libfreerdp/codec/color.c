@@ -810,6 +810,16 @@ BOOL freerdp_image_scale(BYTE* pDstData, DWORD DstFormat, UINT32 nDstStep, UINT3
 {
 	BOOL rc = FALSE;
 
+	if ((INT32)nXDst < 0)
+	{
+		return FALSE;
+	}
+
+	if ((INT32)nYDst < 0)
+	{
+		return FALSE;
+	}
+
 	if (nDstStep == 0)
 		nDstStep = nDstWidth * FreeRDPGetBytesPerPixel(DstFormat);
 
