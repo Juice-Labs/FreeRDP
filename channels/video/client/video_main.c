@@ -397,7 +397,7 @@ static BOOL video_onMappedGeometryUpdate(MAPPED_GEOMETRY* geometry)
 	WINPR_ASSERT(presentation);
 
 	r = &geometry->geometry.boundingRect;
-	WLog_DBG(TAG,
+	WLog_INFO(TAG,
 	         "geometry updated topGeom=(%" PRId32 ",%" PRId32 "-%" PRId32 "x%" PRId32
 	         ") geom=(%" PRId32 ",%" PRId32 "-%" PRId32 "x%" PRId32 ") rects=(%" PRId16 ",%" PRId16
 	         "-%" PRId16 "x%" PRId16 ")",

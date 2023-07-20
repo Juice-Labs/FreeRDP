@@ -108,9 +108,9 @@ INT32 avc420_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize
 	pYUVData[0] = h264->pYUVData[0];
 	pYUVData[1] = h264->pYUVData[1];
 	pYUVData[2] = h264->pYUVData[2];
-	if (!yuv420_context_decode(h264->yuv, pYUVData, h264->iStride, h264->height, DstFormat,
+	if (!yuv420_context_decode(h264->yuv, pYUVData, h264->iStride, h264->width, h264->height, DstFormat,
 	                           pDstData, nDstStep, regionRects, numRegionRects))
-		return -1002;
+    	return -1002;
 
 	return 1;
 }
@@ -475,7 +475,7 @@ static BOOL avc444_process_rects(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
 	pYUVDstData[0] = ppYUVDstData[0];
 	pYUVDstData[1] = ppYUVDstData[1];
 	pYUVDstData[2] = ppYUVDstData[2];
-	if (!yuv444_context_decode(h264->yuv, (BYTE)type, pYUVData, piStride, h264->height, pYUVDstData,
+	if (!yuv444_context_decode(h264->yuv, (BYTE)type, pYUVData, piStride, h264->width, h264->height, pYUVDstData,
 	                           piDstStride, DstFormat, pDstData, nDstStep, rects, nrRects))
 		return FALSE;
 
@@ -674,7 +674,7 @@ H264_CONTEXT* h264_context_new(BOOL Compressor)
 	if (!h264_context_init(h264))
 		goto fail;
 
-	h264->yuv = yuv_context_new(Compressor, 0);
+	h264->yuv = yuv_context_new(Compressor, THREADING_FLAGS_DISABLE_THREADS);
 	if (!h264->yuv)
 		goto fail;
 

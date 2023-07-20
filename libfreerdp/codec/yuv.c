@@ -8,6 +8,8 @@
 #include <freerdp/log.h>
 #include <freerdp/codec/yuv.h>
 
+#pragma optimize("", off)
+
 #define TAG FREERDP_TAG("codec")
 
 #define TILE_SIZE 64
@@ -32,6 +34,8 @@ typedef struct
 	UINT32 iDstStride[3];
 	RECTANGLE_16 rect;
 	BYTE type;
+	UINT32 yuvWidth;
+	UINT32 yuvHeight;
 } YUV_COMBINE_WORK_PARAM;
 
 typedef struct
@@ -67,7 +71,7 @@ struct S_YUV_CONTEXT
 	YUV_COMBINE_WORK_PARAM* work_combined_params;
 };
 
-static INLINE BOOL avc420_yuv_to_rgb(const BYTE* pYUVData[3], const UINT32 iStride[3],
+static INLINE BOOL avc420_yuv_to_rgb(const BYTE* pYUVData[3], UINT32 yuvWidth, UINT32 yuvHeight, const UINT32 iStride[3],
                                      const RECTANGLE_16* rect, UINT32 nDstStep, BYTE* pDstData,
                                      DWORD DstFormat)
 {
@@ -89,10 +93,15 @@ static INLINE BOOL avc420_yuv_to_rgb(const BYTE* pYUVData[3], const UINT32 iStri
 	pYUVPoint[1] = pYUVData[1] + rect->top / 2 * iStride[1] + rect->left / 2;
 	pYUVPoint[2] = pYUVData[2] + rect->top / 2 * iStride[2] + rect->left / 2;
 
-	roi.width = width;
-	roi.height = height;
+	roi.width = yuvWidth;
+	roi.height = yuvHeight;
 
-	if (prims->YUV420ToRGB_8u_P3AC4R(pYUVPoint, iStride, pDstPoint, nDstStep, DstFormat, &roi) !=
+	UINT32 stride[3];
+	stride[0] = iStride[0];
+	stride[1] = iStride[1];
+	stride[2] = iStride[2];
+
+	if (prims->YUV420ToRGB_8u_P3AC4R(pYUVPoint, stride, pDstPoint, nDstStep, DstFormat, &roi) !=
 	    PRIMITIVES_SUCCESS)
 		return FALSE;
 
@@ -139,7 +148,7 @@ static void CALLBACK yuv420_process_work_callback(PTP_CALLBACK_INSTANCE instance
 	WINPR_UNUSED(work);
 	WINPR_ASSERT(param);
 
-	if (!avc420_yuv_to_rgb(param->pYUVData, param->iStride, &param->rect, param->nDstStep,
+	if (!avc420_yuv_to_rgb(param->pYUVData, param->context->width, param->context->height, param->iStride, &param->rect, param->nDstStep,
 	                       param->dest, param->DstFormat))
 		WLog_WARN(TAG, "avc420_yuv_to_rgb failed");
 }
@@ -368,7 +377,7 @@ static BOOL intersects(UINT32 pos, const RECTANGLE_16* regionRects, UINT32 numRe
 }
 
 static BOOL pool_decode(YUV_CONTEXT* context, PTP_WORK_CALLBACK cb, const BYTE* pYUVData[3],
-                        const UINT32 iStride[3], UINT32 yuvHeight, UINT32 DstFormat, BYTE* dest,
+                        const UINT32 iStride[3], UINT32 yuvWidth, UINT32 yuvHeight, UINT32 DstFormat, BYTE* dest,
                         UINT32 nDstStep, const RECTANGLE_16* regionRects, UINT32 numRegionRects)
 {
 	BOOL rc = FALSE;
@@ -503,7 +512,7 @@ static void CALLBACK yuv444_combine_work_callback(PTP_CALLBACK_INSTANCE instance
 
 static INLINE YUV_COMBINE_WORK_PARAM pool_decode_rect_param(
     const RECTANGLE_16* rect, YUV_CONTEXT* context, BYTE type, const BYTE* pYUVData[3],
-    const UINT32 iStride[3], UINT32 yuvHeight, BYTE* pYUVDstData[3], const UINT32 iDstStride[3])
+    const UINT32 iStride[3], UINT32 yuvWidth, UINT32 yuvHeight, BYTE* pYUVDstData[3], const UINT32 iDstStride[3])
 {
 	YUV_COMBINE_WORK_PARAM current = { 0 };
 
@@ -529,11 +538,13 @@ static INLINE YUV_COMBINE_WORK_PARAM pool_decode_rect_param(
 	current.iDstStride[2] = iDstStride[2];
 	current.type = type;
 	current.rect = *rect;
+	current.yuvWidth = yuvWidth;
+	current.yuvHeight = yuvHeight;
 	return current;
 }
 
 static BOOL pool_decode_rect(YUV_CONTEXT* context, BYTE type, const BYTE* pYUVData[3],
-                             const UINT32 iStride[3], UINT32 yuvHeight, BYTE* pYUVDstData[3],
+                             const UINT32 iStride[3], UINT32 yuvWidth, UINT32 yuvHeight, BYTE* pYUVDstData[3],
                              const UINT32 iDstStride[3], const RECTANGLE_16* regionRects,
                              UINT32 numRegionRects)
 {
@@ -555,7 +566,7 @@ static BOOL pool_decode_rect(YUV_CONTEXT* context, BYTE type, const BYTE* pYUVDa
 		for (y = 0; y < numRegionRects; y++)
 		{
 			YUV_COMBINE_WORK_PARAM current =
-			    pool_decode_rect_param(&regionRects[y], context, type, pYUVData, iStride, yuvHeight,
+			    pool_decode_rect_param(&regionRects[y], context, type, pYUVData, iStride, yuvWidth, yuvHeight,
 			                           pYUVDstData, iDstStride);
 			cb(NULL, &current, NULL);
 		}
@@ -577,7 +588,7 @@ static BOOL pool_decode_rect(YUV_CONTEXT* context, BYTE type, const BYTE* pYUVDa
 		}
 		current = &context->work_combined_params[waitCount];
 		*current = pool_decode_rect_param(&regionRects[waitCount], context, type, pYUVData, iStride,
-		                                  yuvHeight, pYUVDstData, iDstStride);
+		                                  yuvWidth, yuvHeight, pYUVDstData, iDstStride);
 
 		if (!submit_object(&context->work_objects[waitCount], cb, current, context))
 			goto fail;
@@ -590,7 +601,7 @@ fail:
 }
 
 BOOL yuv444_context_decode(YUV_CONTEXT* context, BYTE type, const BYTE* pYUVData[3],
-                           const UINT32 iStride[3], UINT32 yuvHeight, BYTE* pYUVDstData[3],
+                           const UINT32 iStride[3], UINT32 yuvWidth, UINT32 yuvHeight, BYTE* pYUVDstData[3],
                            const UINT32 iDstStride[3], DWORD DstFormat, BYTE* dest, UINT32 nDstStep,
                            const RECTANGLE_16* regionRects, UINT32 numRegionRects)
 {
@@ -609,22 +620,22 @@ BOOL yuv444_context_decode(YUV_CONTEXT* context, BYTE type, const BYTE* pYUVData
 		WLog_ERR(TAG, "YUV context set up for encoding, can not decode with it, aborting");
 		return FALSE;
 	}
-	if (!pool_decode_rect(context, type, pYUVData, iStride, yuvHeight, pYUVDstData, iDstStride,
+	if (!pool_decode_rect(context, type, pYUVData, iStride, yuvWidth, yuvHeight, pYUVDstData, iDstStride,
 	                      regionRects, numRegionRects))
 		return FALSE;
 
 	pYUVCDstData[0] = pYUVDstData[0];
 	pYUVCDstData[1] = pYUVDstData[1];
 	pYUVCDstData[2] = pYUVDstData[2];
-	return pool_decode(context, yuv444_process_work_callback, pYUVCDstData, iDstStride, yuvHeight,
+	return pool_decode(context, yuv444_process_work_callback, pYUVCDstData, iDstStride, yuvWidth, yuvHeight,
 	                   DstFormat, dest, nDstStep, regionRects, numRegionRects);
 }
 
 BOOL yuv420_context_decode(YUV_CONTEXT* context, const BYTE* pYUVData[3], const UINT32 iStride[3],
-                           UINT32 yuvHeight, DWORD DstFormat, BYTE* dest, UINT32 nDstStep,
+                           UINT32 yuvWidth, UINT32 yuvHeight, DWORD DstFormat, BYTE* dest, UINT32 nDstStep,
                            const RECTANGLE_16* regionRects, UINT32 numRegionRects)
 {
-	return pool_decode(context, yuv420_process_work_callback, pYUVData, iStride, yuvHeight,
+	return pool_decode(context, yuv420_process_work_callback, pYUVData, iStride, yuvWidth, yuvHeight,
 	                   DstFormat, dest, nDstStep, regionRects, numRegionRects);
 }
 

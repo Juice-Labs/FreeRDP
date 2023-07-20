@@ -18,6 +18,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#pragma optimize ("", off)
+
 #include <freerdp/config.h>
 
 #include <winpr/wlog.h>
@@ -25,12 +28,14 @@
 #include <freerdp/codec/h264.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
+#include <libswscale/swscale.h>
 
 #include "h264.h"
 
 #ifdef WITH_VAAPI
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(55, 9, 0)
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
 #else
 #pragma warning You have asked for VA - API decoding, \
     but your version of libavutil is too old !Disabling.
@@ -85,9 +90,15 @@ typedef struct
 	AVBufferRef* hwctx;
 	AVFrame* hwVideoFrame;
 	enum AVPixelFormat hw_pix_fmt;
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 80, 100)
+	BYTE* y;
+	BYTE* u;
+	BYTE* v;
+	UINT32 frameWidth;
+	UINT32 frameHeight;
+	struct SwsContext* scalarContext;
+//#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 80, 100)
 	AVBufferRef* hw_frames_ctx;
-#endif
+//#endif
 #endif
 } H264_CONTEXT_LIBAVCODEC;
 
@@ -197,6 +208,7 @@ static int libavcodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
 	int status;
 	int gotFrame = 0;
 	AVPacket* packet = NULL;
+	AVFrame* dstFrame = av_frame_alloc();
 
 	WINPR_ASSERT(h264);
 	WINPR_ASSERT(pSrcData || (SrcSize == 0));
@@ -248,6 +260,12 @@ static int libavcodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
 	} while (status == AVERROR(EAGAIN));
 
 	gotFrame = (status == 0);
+
+	if (!gotFrame)
+	{
+		WLog_Print(h264->log, WLOG_ERROR, "Failed to decode video frame (status=%d)", status);
+		goto fail;
+	}
 #else
 #ifdef WITH_VAAPI
 	status =
@@ -269,14 +287,18 @@ static int libavcodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
 	{
 		if (sys->hwVideoFrame->format == sys->hw_pix_fmt)
 		{
-			sys->videoFrame->width = sys->hwVideoFrame->width;
-			sys->videoFrame->height = sys->hwVideoFrame->height;
-			status = av_hwframe_transfer_data(sys->videoFrame, sys->hwVideoFrame, 0);
+			dstFrame->width = sys->hwVideoFrame->width;
+			dstFrame->height = sys->hwVideoFrame->height;
+			dstFrame->format = AV_PIX_FMT_NV12;
+
+			status = av_hwframe_transfer_data(dstFrame, sys->hwVideoFrame, 0);
 		}
 		else
 		{
 			status = av_frame_copy(sys->videoFrame, sys->hwVideoFrame);
 		}
+
+		av_frame_unref(sys->hwVideoFrame);
 	}
 
 	gotFrame = (status == 0);
@@ -289,37 +311,84 @@ static int libavcodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
 	}
 
 #endif
-#if 0
-	WLog_Print(h264->log, WLOG_INFO,
-	           "libavcodec_decompress: frame decoded (status=%d, gotFrame=%d, width=%d, height=%d, Y=[%p,%d], U=[%p,%d], V=[%p,%d])",
-	           status, gotFrame, sys->videoFrame->width, sys->videoFrame->height,
-	           (void*) sys->videoFrame->data[0], sys->videoFrame->linesize[0],
-	           (void*) sys->videoFrame->data[1], sys->videoFrame->linesize[1],
-	           (void*) sys->videoFrame->data[2], sys->videoFrame->linesize[2]);
-#endif
 
 	if (gotFrame)
 	{
 		WINPR_ASSERT(sys->videoFrame);
 
+		if (sys->frameWidth != dstFrame->width || sys->frameHeight != dstFrame->height)
+		{
+			if (sys->y)
+			{
+				av_free(sys->y); sys->y = NULL;
+			}
+			
+			if (sys->u)
+			{
+				av_free(sys->u); sys->u = NULL;
+			}
+
+			if (sys->v)
+			{
+				av_free(sys->v); sys->v = NULL;
+			}
+
+			if (sys->scalarContext)
+			{
+				sws_freeContext(sys->scalarContext); sys->scalarContext = NULL;
+			}
+		}
+
+		if (!sys->scalarContext)
+		{
+			sys->scalarContext = sws_getContext(
+				dstFrame->width, dstFrame->height, dstFrame->format,
+				dstFrame->width, dstFrame->height, AV_PIX_FMT_YUV420P,
+				SWS_FAST_BILINEAR, NULL, NULL, NULL);
+
+			sys->y = (BYTE*)av_malloc(dstFrame->width * dstFrame->height);
+			sys->u = (BYTE*)av_malloc(dstFrame->width * dstFrame->height / 4);
+			sys->v = (BYTE*)av_malloc(dstFrame->width * dstFrame->height / 4);
+
+			sys->frameWidth = dstFrame->width;
+			sys->frameHeight = dstFrame->height;
+		}
+
+#if 0
 		pYUVData[0] = sys->videoFrame->data[0];
 		pYUVData[1] = sys->videoFrame->data[1];
 		pYUVData[2] = sys->videoFrame->data[2];
 		iStride[0] = (UINT32)MAX(0, sys->videoFrame->linesize[0]);
 		iStride[1] = (UINT32)MAX(0, sys->videoFrame->linesize[1]);
 		iStride[2] = (UINT32)MAX(0, sys->videoFrame->linesize[2]);
+#else
+		pYUVData[0] = sys->y;
+		pYUVData[1] = sys->u;
+		pYUVData[2] = sys->v;
+		iStride[0] = (UINT32)MAX(0, dstFrame->width);
+		iStride[1] = (UINT32)MAX(0, dstFrame->width / 2);
+		iStride[2] = (UINT32)MAX(0, dstFrame->width / 2);
 
+		sws_scale(sys->scalarContext, dstFrame->data, dstFrame->linesize, 0, dstFrame->height, pYUVData, iStride);
+#endif
+
+#if 1
+		WLog_Print(h264->log, WLOG_INFO,
+			"libavcodec_decompress: frame decoded (status=%d, gotFrame=%d, width=%d, height=%d, Y=[%p,%d], U=[%p,%d], V=[%p,%d])",
+			status, gotFrame, dstFrame->width, dstFrame->height,
+			(void*)dstFrame->data[0], dstFrame->linesize[0],
+			(void*)dstFrame->data[1], dstFrame->linesize[1],
+			(void*)dstFrame->data[2], dstFrame->linesize[2]);
+#endif
 		rc = 1;
 	}
 	else
 		rc = -2;
 
 fail:
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 133, 100)
+
 	av_packet_unref(packet);
-#else
-	av_packet_free(&packet);
-#endif
+	av_frame_free(&dstFrame);
 
 	return rc;
 }
@@ -539,7 +608,7 @@ static enum AVPixelFormat libavcodec_get_format(struct AVCodecContext* ctx,
 	{
 		if (*p == sys->hw_pix_fmt)
 		{
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 80, 100)
+//#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 80, 100)
 			sys->hw_frames_ctx = av_hwframe_ctx_alloc(sys->hwctx);
 
 			if (!sys->hw_frames_ctx)
@@ -560,6 +629,9 @@ static enum AVPixelFormat libavcodec_get_format(struct AVCodecContext* ctx,
 			if (sys->codecDecoderContext->active_thread_type & FF_THREAD_FRAME)
 				frames->initial_pool_size += sys->codecDecoderContext->thread_count;
 
+			AVD3D11VAFramesContext* hwctx = (AVD3D11VAFramesContext*)frames->hwctx;
+			hwctx->BindFlags = D3D11_BIND_DECODER;
+
 			int err = av_hwframe_ctx_init(sys->hw_frames_ctx);
 
 			if (err < 0)
@@ -570,7 +642,7 @@ static enum AVPixelFormat libavcodec_get_format(struct AVCodecContext* ctx,
 			}
 
 			sys->codecDecoderContext->hw_frames_ctx = av_buffer_ref(sys->hw_frames_ctx);
-#endif
+//#endif
 			return *p;
 		}
 	}
@@ -627,7 +699,7 @@ static BOOL libavcodec_init(H264_CONTEXT* h264)
 		if (!sys->hwctx)
 		{
 			int ret =
-			    av_hwdevice_ctx_create(&sys->hwctx, AV_HWDEVICE_TYPE_VAAPI, VAAPI_DEVICE, NULL, 0);
+			    av_hwdevice_ctx_create(&sys->hwctx, AV_HWDEVICE_TYPE_D3D11VA, "auto", NULL, 0);
 
 			if (ret < 0)
 			{
@@ -640,7 +712,7 @@ static BOOL libavcodec_init(H264_CONTEXT* h264)
 		}
 
 		sys->codecDecoderContext->get_format = libavcodec_get_format;
-		sys->hw_pix_fmt = AV_PIX_FMT_VAAPI;
+		sys->hw_pix_fmt = AV_PIX_FMT_D3D11; // AV_PIX_FMT_YUVJ420P;
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 80, 100)
 		sys->codecDecoderContext->hw_device_ctx = av_buffer_ref(sys->hwctx);
 #endif

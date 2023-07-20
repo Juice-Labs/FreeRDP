@@ -28,6 +28,8 @@
 #include <freerdp/codec/color.h>
 #include "prim_internal.h"
 
+#pragma optimize ("", off)
+
 static pstatus_t general_LumaToYUV444(const BYTE* const pSrcRaw[3], const UINT32 srcStep[3],
                                       BYTE* pDstRaw[3], const UINT32 dstStep[3],
                                       const RECTANGLE_16* roi)
@@ -505,7 +507,7 @@ static pstatus_t general_YUV420ToRGB_8u_P3AC4R(const BYTE* const pSrc[3], const 
 		{
 			BYTE r;
 			BYTE g;
-			BYTE b;
+			BYTE b; 
 
 			if (++x == halfWidth)
 				lastCol <<= 1;
